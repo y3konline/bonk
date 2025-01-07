@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="bonk.png" style="width: 60%" />
+    <img src="_bonk.png" style="width: 60%" />
     <br />
     <br />
 </p>
