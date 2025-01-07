@@ -1,3 +1,9 @@
+<p align="center">
+    <img src="bonk.png" style="width: 60%" />
+    <br />
+    <br />
+</p>
+
 # Bonk!
 
 Simple 3D game collision library for Jai.
