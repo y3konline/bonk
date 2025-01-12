@@ -14,17 +14,15 @@ RaycastHit :: struct {
 //
 // Raycasts against a given shape determined at runtime.
 //---------------------
-raycast_shape :: (ray: Ray, shape: AnyShape) -> bool, RaycastHit {
+raycast_shape :: (ray: Ray, shape: AnyShape, pose: Pose) -> bool, RaycastHit {
     if shape.variant == {
-        case .AABB;
-            has_hit, hit := raycast_aabb(ray, shape.aabb);
-            return has_hit, hit;
-        case .OBB;
-            has_hit, hit := raycast_obb(ray, shape.obb);
+        case .BOX;
+            has_hit, hit := raycast_box(ray, shape.box, pose);
             return has_hit, hit;
 
         case;
             assert(false, "Unimplemented raycast variant: %", shape.variant);
+            return false, .{};
     }
 }
 
@@ -76,14 +74,14 @@ raycast_aabb :: (ray: Ray, aabb: AABB) -> bool, RaycastHit {
 // then transforming the result back into world space.
 //---------------------
 raycast_box :: (ray: Ray, box: Box, pose: Pose) -> bool, RaycastHit {
-    inv_rotation := conjugate(obb.rotation);
+    inv_rotation := conjugate(pose.q);
     local_ray := Ray.{
-        origin = rotate(ray.origin-obb.center, inv_rotation),
+        origin = rotate(ray.origin-pose.p, inv_rotation),
         dir = rotate(ray.dir, inv_rotation),
     };
     local_aabb := AABB.{
-        min = -obb.extents,
-        max = obb.extents,
+        min = -box.extents,
+        max = box.extents,
     };
 
     has_hit, local_hit := raycast_aabb(local_ray, local_aabb);
@@ -91,41 +89,110 @@ raycast_box :: (ray: Ray, box: Box, pose: Pose) -> bool, RaycastHit {
 
     return true, .{
         t = local_hit.t,
-        point = rotate(local_hit.point, obb.rotation),
+        point = pose.p + rotate(local_hit.point, pose.q),
     };
 }
 
 //=====================
-// raycast_line
+// raycast_segment
 //---------------------
-raycast_line :: (a: Ray, b: Line) -> bool, RaycastHit {
+raycast_segment :: (a: Ray, b: Segment) -> bool, RaycastHit {
     // @TODO
     UNIMPLEMENTED();
 }
 
 //=====================
 // raycast_triangle
+//
+// Using Section 5.3.6 of Real-Time Collision Detection by Christer Ericson
 //---------------------
-raycast_triangle :: (a: Ray, b: Triangle) -> bool, RaycastHit {
-    // @TODO
-    UNIMPLEMENTED();
+raycast_triangle :: (ray: Ray, tri: Triangle) -> bool, RaycastHit {
+    ab := tri.p2 - tri.p1;
+    ac := tri.p3 - tri.p1;
+    qp := -ray.dir;
+
+    // Compute triangle normal. Can be precalculated or cached if intersecting multiple
+    // segments against the same triangle.
+    n := cross(ab, ac);
+
+    // Compute denominator d. If d <= 0, segment is parallel to or points away from triangle,
+    // so exit early
+    d := dot(qp, n);
+    if (d <= 0.0) return false, .{};
+
+    // Compute intersection t value of pq with plane of triangle.
+    // A ray intersects if 0 <= t. Segment intersects if 0 <= t <= 1.
+    // Delay dividing by d until intersection has been found to pierce triangle.
+    ap := ray.origin - tri.p1;
+    t := dot(ap, n);
+    if (t < 0.0) return false, .{};
+    // if (t > d) return false, .{}; // For segment; exclude this code line for a ray test
+
+    // Compute barycentric coordinate components and test if within bounds
+    e := cross(qp, ap);
+    v := dot(ac, e);
+    if (v < 0.0 || v > d) return false, .{};
+    w := -dot(ab, e);
+    if (w < 0.0 || v + w > d) return false, .{};
+
+    // Segment/ray intersects triangle.
+    // Perform delayed division and compute the last barycentric coordinate component
+    ood := 1.0 / d;
+    t *= ood;
+    v *= ood;
+    w *= ood;
+    u := 1.0 - v - w;
+
+    return true, RaycastHit.{
+        t = t,
+        point = ray.origin + ray.dir * t,
+        normal = normalize(n),
+    };
 }
 
 //=====================
 // raycast_plane
+//
+// Using section 5.3.1 of Real Time Collision Detection by Christer Ericson.
+// Note, this does not explicitly handle division by zero, but assuming IEEE-754 this will still be correct.
+// See section 11.2.2 on infinity arithmetic for details.
 //---------------------
-raycast_plane :: (a: Ray, b: Plane) -> bool, RaycastHit {
-    // @TODO
-    UNIMPLEMENTED();
+raycast_plane :: (ray: Ray, plane: Plane) -> bool, RaycastHit {
+    t := (plane.distance - dot(plane.normal, ray.origin)) / dot(plane.normal, ray.dir);
+    if t >= 0.0 {
+        return true, RaycastHit.{
+            t = t,
+            point = ray.origin + t * ray.dir,
+            normal = plane.normal,
+        };
+    }
+    return false, .{};
 }
 
 //=====================
 // raycast_sphere
+//
+// Using Section 5.3.2 of Real-Time Collision Detection by Christer Ericson
 //---------------------
-raycast_sphere :: (a: Ray, b: Sphere) -> bool, RaycastHit {
-    // @TODO
-    UNIMPLEMENTED();
-}
+raycast_sphere :: (ray: Ray, s: Sphere, spos: Vector3) -> bool, RaycastHit {
+    m := ray.origin - spos;
+    b := dot(m, ray.dir);
+    c := dot(m, m) - s.radius*s.radius;
+    // Exit if r's origin outside s (c > 0) and r pointing away from s (b > 0)
+    if (c > 0.0 && b > 0.0) return false, .{};
+    discr := b*b - c;
+    // A negtyative discriminant corresponds to ray missing sphere
+    if (discr < 0.0) return false, .{};
+    // Ray now found to intersect sphere, compute smallest t value of intersection
+    t := -b - sqrt(discr);
+    // If t is negative, ray started inside sphere so clamp t to zero
+    if (t < 0.0) t = 0.0;
+
+    return true, RaycastHit.{
+        t = t,
+        point = ray.origin + ray.dir * t,
+    }; // @TODO - normal?
+} @Tested
 
 //=====================
 // raycast_capsule
@@ -137,8 +204,44 @@ raycast_capsule :: (a: Ray, b: Capsule) -> bool, RaycastHit {
 
 //=====================
 // raycast_heightfield
+//
+// This is a case where we have a 2D Heightfield, but a 3D Ray.
+// My idea for how to handle it is this:
+//
+// 1. Convert the 3D ray into a 2D Ground ray, basically by removing the Y (assuming Y-Up).
+// 2. Do the 2D Ray - 2D Uniform Grid method from Section 7.4.2 of Real Time Collision Detection by Christer Ericson.
+// 3. Now we have the cells that the ray touches. From here we can triangulate those cells and do 3D Ray vs 3D Triangle.
 //---------
 raycast_heightfield :: (a: Ray, b: Heightfield) -> bool, RaycastHit {
-    // @TODO
-    UNIMPLEMENTED();
+    // has_hit := false;
+    // result: RaycastHit;
+    // result.t = 1.0;
+
+    // // Broad Phase: find relevant heightfield cells
+    // // Compute swept bounds
+    // end_pose := pose;
+    // end_pose.p += dir * distance;
+    // start_aabb := Sphere.compute_aabb(swept_sphere, pose);
+    // end_aabb   := Sphere.compute_aabb(swept_sphere, end_pose);
+    // swept_aabb := merge_aabb(start_aabb, end_aabb);
+
+    // // Narrow Phase: For each cell in the bounds, generate two triangles and do "sweep capsule vs. triangle".
+    // // We will keep the earliest collision (smallest t value).
+    // for cell : Heightfield.iter_region(hfield, swept_aabb) {
+    //     tri_a, tri_b := Heightfield.triangulate_cell(cell);
+
+    //     has_hit_a, hit_a := sweep_sphere_triangle(swept_sphere, pose, dir, distance, tri_a);
+    //     has_hit_b, hit_b := sweep_sphere_triangle(swept_sphere, pose, dir, distance, tri_b);
+
+    //     if has_hit_a && hit_a.t < result.t {
+    //         has_hit = true;
+    //         result = hit_a;
+    //     }
+    //     if has_hit_b && hit_b.t < result.t {
+    //         has_hit = true;
+    //         result = hit_b;
+    //     }
+    // }
+
+    // return has_hit, result;
 }
