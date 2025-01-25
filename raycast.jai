@@ -20,6 +20,10 @@ raycast_shape :: (ray: Ray, shape: AnyShape, pose: Pose) -> bool, RaycastHit {
             has_hit, hit := raycast_box(ray, shape.box, pose);
             return has_hit, hit;
 
+        case .SPHERE;
+            has_hit, hit := raycast_sphere(ray, shape.sphere, pose.p);
+            return has_hit, hit;
+
         case;
             assert(false, "Unimplemented raycast variant: %", shape.variant);
             return false, .{};
@@ -32,7 +36,7 @@ raycast_shape :: (ray: Ray, shape: AnyShape, pose: Pose) -> bool, RaycastHit {
 // Using the "Slab" method from section 5.3.3 of Real-Time Collision Detection by Christer Ericson.
 //---------------------
 raycast_aabb :: (ray: Ray, aabb: AABB) -> bool, RaycastHit {
-    EPSILON :: 0.0001;
+    EPSILON :: 0.000001;
     tmin := 0.0;
     tmax := FLOAT32_MAX;
 

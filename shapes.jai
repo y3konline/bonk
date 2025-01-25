@@ -1,4 +1,5 @@
 ShapeVariant :: enum {
+    INVALID;
     SEGMENT;
     CYLINDER;
     TRIANGLE;
@@ -28,6 +29,7 @@ AnyShape :: struct {
             case .CAPSULE; return Capsule.compute_local_aabb(shape.capsule);
             case;
                 assert(false, "AnyShape.compute_local_aabb variant not implemented: %\n", shape.variant);
+                return .{};
         }
     }
 
@@ -37,6 +39,7 @@ AnyShape :: struct {
             case .CAPSULE; return Capsule.compute_aabb(shape.capsule, pose);
             case;
                 assert(false, "compute_aabb variant not implemented: %\n", shape.variant);
+                return .{};
         }
     }
 }

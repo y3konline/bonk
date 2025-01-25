@@ -79,12 +79,41 @@ intersect_segment_cylinder :: (seg: Segment, cyl: Cylinder, $exclude_endcaps := 
 } @Tested
 
 //=====================
+// intersect_segment_capsule
+//
+// We do a cylinder intersection, but then instead of testing against the endcaps, we'll check against sphere caps.
+//---------------------
+intersect_segment_capsule :: (seg: Segment, capsule_p1: Vector3, capsule_p2: Vector3, capsule_radius: float) -> bool, t: float {
+    cyl := Cylinder.{
+        p1 = capsule_p1,
+        p2 = capsule_p2,
+        radius = capsule_radius,
+    };
+    has_hit, t := intersect_segment_cylinder(seg, cyl, exclude_endcaps = true);
+    if has_hit {
+        return true, t;
+    }
+    sphere := Sphere.{capsule_radius};
+    hit_p1, p1_t := intersect_segment_sphere(seg, sphere, cyl.p1);
+    hit_p2, p2_t := intersect_segment_sphere(seg, sphere, cyl.p2);
+
+    if hit_p1 && hit_p2 {
+        return true, min(p1_t, p2_t);
+    } else if hit_p1 {
+        return true, p1_t;
+    } else if hit_p2 {
+        return true, p2_t;
+    }
+    return false, -1;
+}
+
+//=====================
 // intersect_segment_sphere
 //
 // Using Section 5.3.2 of Real-Time Collision Detection by Christer Ericson
 // This re-uses raycast_sphere, constructing a Ray based on the origin of p1 and direction from p1 to p2 on the Segment.
 //---------------------
-intersect_segment_sphere :: (seg: Segment, s: Sphere, spos: Vector3, $exclude_endcaps := false) -> bool, t: float {
+intersect_segment_sphere :: (seg: Segment, s: Sphere, spos: Vector3) -> bool, t: float {
     dist := distance(seg.p1, seg.p2);
     dir := (seg.p2-seg.p1)/dist;
     ray := Ray.{seg.p1, dir};

@@ -87,16 +87,22 @@ sweep_box_shape :: (swept_box: Box, pose: Pose, dir: Vector3, distance: float, a
 //=====================
 // sweep_sphere_shape
 //---------------------
-sweep_sphere_shape :: (swept_sphere: Sphere, pose: Pose, dir: Vector3, distance: float, shape: AnyShape) -> bool, SweepHit #expand {
-    if shape.variant == {
+sweep_sphere_shape :: (swept_sphere: Sphere, sphere_pose: Pose, dir: Vector3, distance: float, against_shape: AnyShape, shape_pose: Pose) -> bool, SweepHit #expand {
+    if against_shape.variant == {
         case .PLANE;
-            has_hit, hit := sweep_sphere_plane(swept_sphere, pose, dir, distance, shape.plane);
+            has_hit, hit := sweep_sphere_plane(swept_sphere, sphere_pose, dir, distance, against_shape.plane);
             return has_hit, hit;
         case .TRIANGLE;
-            has_hit, hit := sweep_sphere_triangle(swept_sphere, pose, dir, distance, shape.triangle);
+            has_hit, hit := sweep_sphere_triangle(swept_sphere, sphere_pose, dir, distance, against_shape.triangle);
             return has_hit, hit;
-        case .HEIGHTFIELD;
-            has_hit, hit := sweep_sphere_heightfield(swept_sphere, pose, dir, distance, shape.heightfield);
+        // case .HEIGHTFIELD;
+        //     has_hit, hit := sweep_sphere_heightfield(swept_sphere, sphere_pose, dir, distance, against_shape.heightfield);
+        //     return has_hit, hit;
+        case .BOX;
+            has_hit, hit := sweep_sphere_box(swept_sphere, sphere_pose, dir, distance, against_shape.box, shape_pose);
+            return has_hit, hit;
+        case .SPHERE;
+            has_hit, hit := sweep_sphere_sphere(swept_sphere, sphere_pose.p, dir, distance, against_shape.sphere, shape_pose.p);
             return has_hit, hit;
         case; assert(false, "Unimplemented sweep: Sphere-%", against_shape.variant);
     }
@@ -194,6 +200,133 @@ sweep_sphere_triangle :: (swept_sphere: Sphere, pose: Pose, dir: Vector3, distan
     }
 
     // No hit
+    return false, .{};
+}
+
+//=====================
+// sweep_sphere_box
+//
+// Using Section 5.5.7 of Real-Time Collision Detection by Christer Ericson.
+//---------------------
+sweep_sphere_box :: (swept_sphere: Sphere, sphere_pose: Pose, dir: Vector3, distance: float, box: Box, box_pose: Pose) -> bool, SweepHit #expand {
+    // transform the sphere's origin and direction into the coordinate space of the Box
+    inv_rotation := conjugate(box_pose.q);
+    local_sphere_origin := rotate(sphere_pose.p - box_pose.p, inv_rotation);
+    local_sphere_dir := rotate(dir, inv_rotation);
+
+    b := AABB.{
+        min = -box.extents,
+        max =  box.extents};
+    // Compute the AABB resulting from expanding `box` by sphere radius
+    e := b;
+    e.min -= xyz(swept_sphere.radius);
+    e.max += xyz(swept_sphere.radius);
+
+    // Intersect ray against expanded AABB e.
+    // Exit with no intersection if ray misses e, else get intersection point p and time t as result
+    has_hit, hit := raycast_aabb(.{local_sphere_origin, local_sphere_dir}, e);
+    if !has_hit return false, .{};
+    p := hit.point;
+    t := hit.t / distance;
+    if t > 1.0 || t < 0.0 return false, .{};
+
+    // Compute which min and max faces of `box` the intersection point p lies
+    // outside of. Note, u and v cannot have the same bits set and they must have at least one bit set among them.
+    u, v := 0;
+    if p.x < b.min.x then u |= 1;
+    if p.x > b.max.x then v |= 1;
+    if p.y < b.min.y then u |= 2;
+    if p.y > b.max.y then v |= 2;
+    if p.z < b.min.z then u |= 4;
+    if p.z > b.max.z then v |= 4;
+
+    // 'Or' all set bits together into a bit mask (note: here u + v == u | v)
+    m := u + v;
+
+    seg := Segment.{p1=local_sphere_origin, p2=local_sphere_origin+local_sphere_dir*distance};
+
+    // Support function that returns the AABB vertex with index n
+    corner :: (b: AABB, n: int) -> Vector3 {
+        p: Vector3;
+        p.x = ifx (n & 1) then b.max.x else b.min.x;
+        p.y = ifx (n & 2) then b.max.y else b.min.y;
+        p.z = ifx (n & 4) then b.max.z else b.min.z;
+        return p;
+    }
+
+    normal: Vector3;
+
+    // If all 3 bits set (m == 7) then p is in a vertex region
+    if m == 7 {
+        // Must now intersect segment [c, c+d] against the capsules of the three
+        // edges meeting at the vertex and return the best time, if one or more hit
+        tmin := FLOAT32_MAX;
+        has_hit: bool;
+        has_hit, t = intersect_segment_capsule(seg, corner(b, v), corner(b, v^1), swept_sphere.radius);
+        if has_hit && t < tmin {
+            tmin = t;
+            normal = normalize(corner(b, v^1) - corner(b, u));
+        }
+        has_hit, t = intersect_segment_capsule(seg, corner(b, v), corner(b, v^2), swept_sphere.radius);
+        if has_hit && t < tmin {
+            tmin = t;
+            normal = normalize(corner(b, v^2) - corner(b, u));
+        }
+        has_hit, t = intersect_segment_capsule(seg, corner(b, v), corner(b, v^4), swept_sphere.radius);
+        if has_hit && t < tmin {
+            tmin = t;
+            normal = normalize(corner(b, v^4) - corner(b, u));
+        }
+
+        if tmin == FLOAT32_MAX return false, .{};
+        p = seg.p1 + seg.p2 * tmin;
+        world_point := rotate(p, box_pose.q) + box_pose.p;
+        world_normal := normalize(rotate(normal, box_pose.q));
+        return true, .{t=tmin, point=world_point, normal=world_normal};
+    }
+    // If only one bit set in m, then p is in a face region
+    if (m & (m-1)) == 0 {
+        print("face\n");
+        // Intersection with a face
+        // Time t from raycast intersection with expanded box is the correct intersection time.
+        if null {}
+        if u & 1 then normal = .{-1,  0,  0};
+        if v & 1 then normal = .{ 1,  0,  0};
+        if u & 2 then normal = .{ 0, -1,  0};
+        if v & 2 then normal = .{ 0,  1,  0};
+        if u & 4 then normal = .{ 0,  0, -1};
+        if v & 4 then normal = .{ 0,  0,  1};
+        world_point := rotate(p, box_pose.q) + box_pose.p;
+        world_normal := normalize(rotate(normal, box_pose.q));
+        return true, .{t=t, point=world_point, normal=world_normal};
+    }
+
+    // p is in an edge region. Intersect against the capsule at the edge
+    has_hit, t = intersect_segment_capsule(seg, corner(b, u^7), corner(b, v), swept_sphere.radius);
+    if !has_hit return false, .{};
+
+    print("edge\n");
+
+    edge_start := corner(b, u);
+    edge_end   := corner(b, v^7);
+    edge_dir   := normalize(edge_end - edge_start);
+    closest_point_on_edge := edge_start + dot(local_sphere_dir - edge_start, edge_dir) * edge_dir;
+    normal = normalize(local_sphere_dir - closest_point_on_edge);
+    // normal = normalize(corner(b, v) - corner(b, u^7));
+
+    p = seg.p1 + seg.p2 * t;
+    world_point := rotate(p, box_pose.q) + box_pose.p;
+    world_normal := rotate(normal, box_pose.q);
+    print("normal: %\n", normal);
+    return has_hit, .{t=t, point=world_point, normal=world_normal};
+} @Tested
+
+sweep_sphere_sphere :: (sa: Sphere, ca: Vector3, dir: Vector3, distance: float, sb: Sphere, cb: Vector3) -> bool, SweepHit {
+    combined_sphere := Sphere.{sa.radius + sb.radius};
+    has_hit, hit := raycast_sphere(Ray.{ca, dir}, combined_sphere, cb);
+    if has_hit && hit.t <= distance {
+        return true, .{t=hit.t, point=hit.point};   // @TODO normal?
+    }
     return false, .{};
 }
 
