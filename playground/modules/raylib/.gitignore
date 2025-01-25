@@ -1,0 +1,8 @@
+*.exe
+*.pdb
+*.pc
+*.obj
+*.exp
+.build/
+
+*_unrecognized.h
